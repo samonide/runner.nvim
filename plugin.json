@@ -1,0 +1,19 @@
+{
+    "name": "runner.nvim",
+    "description": "🚀 Universal, intelligent code runner for Neovim. Auto-detects languages and runs code with the right command.",
+    "repository": "runner.nvim",
+    "keywords": [
+        "neovim",
+        "plugin",
+        "code runner",
+        "competitive programming",
+        "multi-language",
+        "compile",
+        "execute",
+        "c++",
+        "python",
+        "javascript",
+        "rust",
+        "go"
+    ]
+}

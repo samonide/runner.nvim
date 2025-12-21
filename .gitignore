@@ -1,0 +1,26 @@
+# Build artifacts
+.build/
+build/
+*.o
+*.out
+*.exe
+*.class
+
+# Test outputs
+output.txt
+
+# Examples (for local testing)
+examples/
+
+# Neovim
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
