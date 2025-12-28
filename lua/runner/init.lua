@@ -1,7 +1,14 @@
 -- =====================================================================
 -- runner.nvim - Multi-language code runner for Neovim
 -- A universal code execution plugin that intelligently runs code based
--- on file type with customizable configurations per language
+-- on file type with customizable configurations per language.
+--
+-- Features:
+--   - Multi-language support with automatic detection
+--   - Compilation with optimization profiles
+--   - Test runner with input/output validation
+--   - Execution timing and history tracking
+--   - Watch mode for auto-run on save
 -- =====================================================================
 
 local M = {}
@@ -9,83 +16,81 @@ local config = require('runner.config')
 local terminal = require('runner.terminal')
 local builders = require('runner.builders')
 
--- Plugin state
-M.config = config.default
-M.last_build = {}
-M.run_history = {}
-M.watch_mode = false
+-- =====================================================================
+-- PLUGIN STATE
+-- =====================================================================
 
--- Setup function to initialize the plugin with user configuration
+M.config = config.default
+M.last_build = {}      -- Cache of last built binaries per filetype
+M.run_history = {}     -- History of recent executions
+M.watch_mode = false   -- Watch mode state
+
+-- =====================================================================
+-- SETUP AND INITIALIZATION
+-- =====================================================================
+
+--- Initialize the plugin with user configuration
+--- @param opts table|nil User configuration options
 function M.setup(opts)
   M.config = vim.tbl_deep_extend('force', config.default, opts or {})
   
-  -- Create user commands
-  vim.api.nvim_create_user_command('RunCode', function()
-    M.run()
-  end, { desc = 'Run current file' })
-  
-  vim.api.nvim_create_user_command('RunFile', function()
-    M.run()
-  end, { desc = 'Run current file' })
-  
-  vim.api.nvim_create_user_command('RunWithInput', function()
-    M.run_with_input()
-  end, { desc = 'Run current file with input.txt' })
-  
-  vim.api.nvim_create_user_command('RunTests', function()
-    M.run_tests()
-  end, { desc = 'Run tests from tests/ directory' })
-  
-  vim.api.nvim_create_user_command('RunBuild', function()
-    M.build_only()
-  end, { desc = 'Build without running' })
-  
-  vim.api.nvim_create_user_command('RunLast', function()
-    M.run_last()
-  end, { desc = 'Run last built executable' })
-  
-  vim.api.nvim_create_user_command('RunFloat', function()
-    M.run_float()
-  end, { desc = 'Run in floating terminal' })
-  
-  vim.api.nvim_create_user_command('RunIOFiles', function()
-    M.run_with_io_files()
-  end, { desc = 'Run with input.txt -> output.txt' })
-  
-  vim.api.nvim_create_user_command('RunProfile', function()
-    M.cycle_profile()
-  end, { desc = 'Cycle optimization profile' })
-  
-  vim.api.nvim_create_user_command('RunWatch', function()
-    M.toggle_watch()
-  end, { desc = 'Toggle watch mode (auto-run on save)' })
-  
-  vim.api.nvim_create_user_command('RunHistory', function()
-    M.show_history()
-  end, { desc = 'Show run history' })
-  
-  vim.api.nvim_create_user_command('RunClean', function()
-    M.clean_build()
-  end, { desc = 'Clean build directory' })
+  -- Register all user commands
+  M._create_user_commands()
 end
 
--- Main run function
-function M.run()
+--- Create all user commands for the plugin
+--- @private
+function M._create_user_commands()
+  local commands = {
+    { 'RunCode',      M.run,              'Run current file' },
+    { 'RunFile',      M.run,              'Run current file' },
+    { 'RunWithInput', M.run_with_input,   'Run current file with input.txt' },
+    { 'RunTests',     M.run_tests,        'Run tests from tests/ directory' },
+    { 'RunBuild',     M.build_only,       'Build without running' },
+    { 'RunLast',      M.run_last,         'Run last built executable' },
+    { 'RunFloat',     M.run_float,        'Run in floating terminal' },
+    { 'RunIOFiles',   M.run_with_io_files, 'Run with input.txt -> output.txt' },
+    { 'RunProfile',   M.cycle_profile,    'Cycle optimization profile' },
+    { 'RunWatch',     M.toggle_watch,     'Toggle watch mode (auto-run on save)' },
+    { 'RunHistory',   M.show_history,     'Show run history' },
+    { 'RunClean',     M.clean_build,      'Clean build directory' },
+  }
+  
+  for _, cmd in ipairs(commands) do
+    vim.api.nvim_create_user_command(cmd[1], cmd[2], { desc = cmd[3] })
+  end
+end
+
+-- =====================================================================
+-- HELPER FUNCTIONS
+-- =====================================================================
+
+--- Get runner configuration for current filetype
+--- @return string|nil filetype Current filetype
+--- @return table|nil runner Runner configuration
+local function get_runner()
   local ft = vim.bo.filetype
   local runner = M.config.runners[ft]
   
   if not runner then
     vim.notify('No runner configured for filetype: ' .. ft, vim.log.levels.WARN)
-    return
+    return nil, nil
   end
   
-  -- Save file before running
+  return ft, runner
+end
+
+--- Save current buffer and suppress errors
+local function save_current_buffer()
   pcall(vim.cmd, 'write')
-  
-  -- Record start time
-  local start_time = vim.loop.hrtime()
-  
-  local function on_complete()
+end
+
+--- Create a completion callback that records execution time
+--- @param ft string Filetype
+--- @param start_time number Start time in nanoseconds
+--- @return function Completion callback
+local function create_completion_callback(ft, start_time)
+  return function()
     local elapsed = (vim.loop.hrtime() - start_time) / 1e9
     local filename = vim.fn.expand('%:t')
     
@@ -103,78 +108,173 @@ function M.run()
     end
     
     if M.config.show_time then
-      vim.notify(string.format('✓ Execution completed in %.3fs', elapsed), vim.log.levels.INFO)
+      vim.notify(
+        string.format('✓ Execution completed in %.3fs', elapsed),
+        vim.log.levels.INFO
+      )
     end
-  end
-  
-  if runner.type == 'compiled' then
-    builders.build_and_run(ft, runner, M.config, M.last_build, on_complete)
-  elseif runner.type == 'interpreted' then
-    local filepath = vim.fn.expand('%:p')
-    local cmd = runner.command:gsub('$FILE', filepath)
-    terminal.open_bottom(cmd, on_complete)
   end
 end
 
--- Build without running
-function M.build_only()
-  local ft = vim.bo.filetype
-  local runner = M.config.runners[ft]
+--- Get binary path for current file
+--- @return string Binary path
+local function get_binary_path()
+  local base = vim.fn.expand('%:t:r')
+  return vim.fn.getcwd() .. '/' .. M.config.build_dir .. '/' .. base
+end
+
+--- Check if binary exists and prompt user to build
+--- @param bin string Binary path
+--- @return boolean True if should continue, false if cancelled
+local function check_binary_exists(bin)
+  if vim.fn.filereadable(bin) == 1 then
+    return true
+  end
   
-  if not runner then
-    vim.notify('No runner configured for filetype: ' .. ft, vim.log.levels.WARN)
+  local choice = vim.fn.confirm(
+    'Binary not found. Do you want to build first?',
+    '&Yes\n&No',
+    1
+  )
+  
+  if choice ~= 1 then
+    vim.notify('Cancelled', vim.log.levels.INFO)
+    return false
+  end
+  
+  return true
+end
+
+--- Clean binary after run if configured
+--- @param bin string Binary path
+local function clean_binary_if_configured(bin)
+  if M.config.clean_after_run and vim.fn.filereadable(bin) == 1 then
+    vim.fn.delete(bin)
+    vim.notify('🗑️  Binary removed', vim.log.levels.INFO)
+  end
+end
+
+--- Execute interpreted language
+--- @param runner table Runner configuration
+--- @param on_complete function Completion callback
+local function execute_interpreted(runner, on_complete)
+  local filepath = vim.fn.expand('%:p')
+  local cmd = runner.command:gsub('$FILE', filepath)
+  terminal.open_bottom(cmd, on_complete)
+end
+
+--- Execute compiled language
+--- @param ft string Filetype
+--- @param runner table Runner configuration
+--- @param on_complete function Completion callback
+local function execute_compiled(ft, runner, on_complete)
+  local bin = get_binary_path()
+  
+  -- Check if binary exists and ask to build if not
+  if not check_binary_exists(bin) then
     return
   end
+  
+  builders.build_and_run(ft, runner, M.config, M.last_build, function()
+    on_complete()
+    clean_binary_if_configured(bin)
+  end)
+end
+
+-- =====================================================================
+-- CORE EXECUTION FUNCTIONS
+-- =====================================================================
+
+--- Main run function - compile (if needed) and execute
+function M.run()
+  local ft, runner = get_runner()
+  if not runner then return end
+  
+  save_current_buffer()
+  
+  local start_time = vim.loop.hrtime()
+  local on_complete = create_completion_callback(ft, start_time)
+  
+  if runner.type == 'compiled' then
+    execute_compiled(ft, runner, on_complete)
+  elseif runner.type == 'interpreted' then
+    execute_interpreted(runner, on_complete)
+  end
+end
+
+--- Build without running
+function M.build_only()
+  local ft, runner = get_runner()
+  if not runner then return end
   
   if runner.type ~= 'compiled' then
     vim.notify('This filetype does not require compilation', vim.log.levels.INFO)
     return
   end
   
-  pcall(vim.cmd, 'write')
+  save_current_buffer()
   builders.build_only(ft, runner, M.config, M.last_build)
 end
 
--- Run last built executable
+--- Run last built executable without recompiling
 function M.run_last()
-  local ft = vim.bo.filetype
-  local runner = M.config.runners[ft]
+  local ft, runner = get_runner()
+  if not runner then return end
   
-  if not runner or runner.type ~= 'compiled' then
+  if runner.type ~= 'compiled' then
     vim.notify('Not a compiled language', vim.log.levels.WARN)
     return
   end
   
-  local base = vim.fn.expand('%:t:r')
-  local bin = vim.fn.getcwd() .. '/' .. M.config.build_dir .. '/' .. base
+  local bin = get_binary_path()
   
   if vim.fn.filereadable(bin) == 0 then
-    vim.notify('Binary not found. Build first with :RunBuild or :RunCode', vim.log.levels.WARN)
+    vim.notify(
+      'Binary not found. Please build first with <leader>cb (RunBuild)',
+      vim.log.levels.WARN
+    )
     return
   end
   
-  terminal.open_bottom(bin)
+  local start_time = vim.loop.hrtime()
+  
+  local function on_complete()
+    local elapsed = (vim.loop.hrtime() - start_time) / 1e9
+    
+    if M.config.show_time then
+      vim.notify(
+        string.format('✓ Execution completed in %.3fs', elapsed),
+        vim.log.levels.INFO
+      )
+    end
+    
+    clean_binary_if_configured(bin)
+  end
+  
+  terminal.open_bottom(bin, on_complete)
 end
 
--- Run with input.txt
-function M.run_with_input()
-  local ft = vim.bo.filetype
-  local runner = M.config.runners[ft]
-  
-  if not runner then
-    vim.notify('No runner configured for filetype: ' .. ft, vim.log.levels.WARN)
-    return
-  end
-  
-  local input_file = M.config.input_file
-  
-  -- Create input.txt if it doesn't exist
+-- =====================================================================
+-- INPUT/OUTPUT HANDLING
+-- =====================================================================
+
+--- Ensure input file exists, create if needed
+--- @param input_file string Path to input file
+local function ensure_input_file_exists(input_file)
   if vim.fn.filereadable(input_file) == 0 then
     vim.fn.writefile({''}, input_file)
     vim.notify('Created empty ' .. input_file, vim.log.levels.INFO)
   end
+end
+
+--- Run with input.txt redirected to stdin
+function M.run_with_input()
+  local ft, runner = get_runner()
+  if not runner then return end
   
-  pcall(vim.cmd, 'write')
+  local input_file = M.config.input_file
+  ensure_input_file_exists(input_file)
+  save_current_buffer()
   
   if runner.type == 'compiled' then
     builders.build_and_run_with_input(ft, runner, M.config, M.last_build, input_file)
@@ -185,50 +285,19 @@ function M.run_with_input()
   end
 end
 
--- Run in floating terminal
-function M.run_float()
-  local ft = vim.bo.filetype
-  local runner = M.config.runners[ft]
-  
-  if not runner then
-    vim.notify('No runner configured for filetype: ' .. ft, vim.log.levels.WARN)
-    return
-  end
-  
-  pcall(vim.cmd, 'write')
-  
-  if runner.type == 'compiled' then
-    builders.build_only(ft, runner, M.config, M.last_build, function(bin)
-      terminal.open_floating(bin)
-    end)
-  elseif runner.type == 'interpreted' then
-    local filepath = vim.fn.expand('%:p')
-    local cmd = runner.command:gsub('$FILE', filepath)
-    terminal.open_floating(cmd)
-  end
-end
-
--- Run with input.txt -> output.txt
+--- Run with input.txt -> output.txt redirection
 function M.run_with_io_files()
-  local ft = vim.bo.filetype
-  local runner = M.config.runners[ft]
-  
-  if not runner then
-    vim.notify('No runner configured for filetype: ' .. ft, vim.log.levels.WARN)
-    return
-  end
+  local ft, runner = get_runner()
+  if not runner then return end
   
   local input_file = M.config.input_file
   local output_file = M.config.output_file
   
-  -- Create input.txt if it doesn't exist
-  if vim.fn.filereadable(input_file) == 0 then
-    vim.fn.writefile({''}, input_file)
-    vim.notify('Created empty ' .. input_file, vim.log.levels.INFO)
-  end
+  ensure_input_file_exists(input_file)
+  save_current_buffer()
   
-  pcall(vim.cmd, 'write')
-  
+  --- Execute with I/O redirection
+  --- @param bin_or_cmd string Binary path or command
   local function execute_with_io(bin_or_cmd)
     local cmd = string.format('%s < %s > %s', bin_or_cmd, input_file, output_file)
     local result = vim.fn.system(cmd)
@@ -242,8 +311,7 @@ function M.run_with_io_files()
   end
   
   if runner.type == 'compiled' then
-    local base = vim.fn.expand('%:t:r')
-    local bin = vim.fn.getcwd() .. '/' .. M.config.build_dir .. '/' .. base
+    local bin = get_binary_path()
     
     if vim.fn.filereadable(bin) == 0 then
       builders.build_only(ft, runner, M.config, M.last_build, execute_with_io)
@@ -257,59 +325,115 @@ function M.run_with_io_files()
   end
 end
 
--- Run all tests from tests/ directory
-function M.run_tests()
-  local ft = vim.bo.filetype
-  local runner = M.config.runners[ft]
+-- =====================================================================
+-- FLOATING TERMINAL
+-- =====================================================================
+
+--- Run in floating terminal
+function M.run_float()
+  local ft, runner = get_runner()
+  if not runner then return end
   
-  if not runner then
-    vim.notify('No runner configured for filetype: ' .. ft, vim.log.levels.WARN)
-    return
+  save_current_buffer()
+  
+  if runner.type == 'compiled' then
+    builders.build_only(ft, runner, M.config, M.last_build, function(bin)
+      terminal.open_floating(bin)
+    end)
+  elseif runner.type == 'interpreted' then
+    local filepath = vim.fn.expand('%:p')
+    local cmd = runner.command:gsub('$FILE', filepath)
+    terminal.open_floating(cmd)
   end
-  
+end
+
+-- =====================================================================
+-- TEST RUNNER
+-- =====================================================================
+
+--- Check if test directory exists
+--- @return boolean True if tests directory exists
+local function test_directory_exists()
   local test_dir = M.config.test_dir
   
   if vim.fn.isdirectory(test_dir) == 0 then
     vim.notify('No ' .. test_dir .. ' directory found', vim.log.levels.WARN)
-    return
+    return false
   end
   
+  return true
+end
+
+--- Get test input files
+--- @return table|nil Array of test input file paths
+local function get_test_input_files()
+  local test_dir = M.config.test_dir
   local inputs = vim.fn.globpath(test_dir, '*.in', false, true)
   
   if #inputs == 0 then
     vim.notify('No *.in test files found in ' .. test_dir, vim.log.levels.WARN)
-    return
+    return nil
   end
   
-  local function run_tests(bin_or_cmd)
+  return inputs
+end
+
+--- Run a single test case
+--- @param bin_or_cmd string Binary or command to run
+--- @param infile string Input file path
+--- @return boolean passed True if test passed
+--- @return string result_message Result message
+local function run_single_test(bin_or_cmd, infile)
+  local stem = infile:match('(.+)%.in$') or infile
+  local expected_file = stem .. '.out'
+  local cmd = string.format('%s < %s', bin_or_cmd, infile)
+  
+  local actual = vim.fn.system(cmd)
+  local has_expected = vim.fn.filereadable(expected_file) == 1
+  
+  if not has_expected then
+    return nil, '… ' .. vim.fn.fnamemodify(infile, ':t') .. ' (no expected .out file)'
+  end
+  
+  local expected = table.concat(vim.fn.readfile(expected_file), '\n') .. '\n'
+  
+  if actual == expected then
+    return true, '✓ ' .. vim.fn.fnamemodify(infile, ':t') .. ' PASS'
+  else
+    local msg = '✗ ' .. vim.fn.fnamemodify(infile, ':t') .. ' FAIL\n'
+    msg = msg .. '  expected: ' .. expected:gsub('\n$', '') .. '\n'
+    msg = msg .. '  actual  : ' .. actual:gsub('\n$', '')
+    return false, msg
+  end
+end
+
+--- Run all tests from tests/ directory
+function M.run_tests()
+  local ft, runner = get_runner()
+  if not runner then return end
+  
+  if not test_directory_exists() then return end
+  
+  local inputs = get_test_input_files()
+  if not inputs then return end
+  
+  --- Execute all tests
+  --- @param bin_or_cmd string Binary or command to run
+  local function run_all_tests(bin_or_cmd)
     local passed, total = 0, #inputs
     local results = {}
     
     for _, infile in ipairs(inputs) do
-      local stem = infile:match('(.+)%.in$') or infile
-      local expected_file = stem .. '.out'
-      local cmd = string.format('%s < %s', bin_or_cmd, infile)
-      local actual = vim.fn.system(cmd)
-      local expected = ''
-      local has_expected = vim.fn.filereadable(expected_file) == 1
+      local test_passed, result_msg = run_single_test(bin_or_cmd, infile)
+      table.insert(results, result_msg)
       
-      if has_expected then
-        expected = table.concat(vim.fn.readfile(expected_file), '\n') .. '\n'
-      end
-      
-      if has_expected and actual == expected then
+      if test_passed then
         passed = passed + 1
-        table.insert(results, '✓ ' .. vim.fn.fnamemodify(infile, ':t') .. ' PASS')
-      elseif has_expected then
-        table.insert(results, '✗ ' .. vim.fn.fnamemodify(infile, ':t') .. ' FAIL')
-        table.insert(results, '  expected: ' .. expected:gsub('\n$', ''))
-        table.insert(results, '  actual  : ' .. actual:gsub('\n$', ''))
-      else
-        table.insert(results, '… ' .. vim.fn.fnamemodify(infile, ':t') .. ' (no expected .out file)')
       end
     end
     
     table.insert(results, string.format('\nResult: %d/%d passed', passed, total))
+    
     vim.notify(
       table.concat(results, '\n'),
       passed == total and vim.log.levels.INFO or vim.log.levels.WARN,
@@ -317,30 +441,33 @@ function M.run_tests()
     )
   end
   
-  pcall(vim.cmd, 'write')
+  save_current_buffer()
   
   if runner.type == 'compiled' then
-    local base = vim.fn.expand('%:t:r')
-    local bin = vim.fn.getcwd() .. '/' .. M.config.build_dir .. '/' .. base
+    local bin = get_binary_path()
     
     if vim.fn.filereadable(bin) == 0 then
-      builders.build_only(ft, runner, M.config, M.last_build, run_tests)
+      builders.build_only(ft, runner, M.config, M.last_build, run_all_tests)
     else
-      run_tests(bin)
+      run_all_tests(bin)
     end
   elseif runner.type == 'interpreted' then
     local filepath = vim.fn.expand('%:p')
     local cmd = runner.command:gsub('$FILE', filepath)
-    run_tests(cmd)
+    run_all_tests(cmd)
   end
 end
 
--- Cycle through optimization profiles (for compiled languages)
+-- =====================================================================
+-- UTILITY FUNCTIONS
+-- =====================================================================
+
+--- Cycle through optimization profiles (for compiled languages)
 function M.cycle_profile()
-  local ft = vim.bo.filetype
-  local runner = M.config.runners[ft]
+  local ft, runner = get_runner()
+  if not runner then return end
   
-  if not runner or runner.type ~= 'compiled' or not runner.profiles then
+  if runner.type ~= 'compiled' or not runner.profiles then
     vim.notify('No profiles available for this filetype', vim.log.levels.WARN)
     return
   end
@@ -353,7 +480,7 @@ function M.cycle_profile()
   vim.notify('Profile: ' .. runner.profiles[current].name, vim.log.levels.INFO)
 end
 
--- Toggle watch mode (auto-run on save)
+--- Toggle watch mode (auto-run on save)
 function M.toggle_watch()
   M.watch_mode = not M.watch_mode
   
@@ -380,7 +507,7 @@ function M.toggle_watch()
   end
 end
 
--- Show run history
+--- Show run history with timestamps and execution times
 function M.show_history()
   if #M.run_history == 0 then
     vim.notify('No run history yet', vim.log.levels.INFO)
@@ -400,10 +527,14 @@ function M.show_history()
     ))
   end
   
-  vim.notify(table.concat(lines, '\n'), vim.log.levels.INFO, { title = 'Runner History' })
+  vim.notify(
+    table.concat(lines, '\n'),
+    vim.log.levels.INFO,
+    { title = 'Runner History' }
+  )
 end
 
--- Clean build directory
+--- Clean build directory
 function M.clean_build()
   local build_dir = vim.fn.getcwd() .. '/' .. M.config.build_dir
   

@@ -22,14 +22,17 @@ Perfect for **competitive programming**, **learning**, and **quick prototyping**
 - **Smart detection**: Automatically determines the correct runner based on file type
 - **Compiled languages**: Built-in compilation support with optimization profiles
 - **Interpreted languages**: Direct execution support
+- **Intelligent terminal management**: Clean terminal handling - closes previous terminal before creating new one (no stacking!)
+- **Binary existence check**: Prompts to build if binary is missing before running
+- **Detailed error reporting**: Captures and displays compiler stdout/stderr for better debugging
 - **Flexible terminals**: Run in bottom split or floating terminal
 - **Test runner**: Run multiple test cases from a `tests/` directory
 - **Input/Output handling**: Support for `input.txt` and `output.txt` redirection
 - **Optimization profiles**: Cycle through different compiler optimization flags (Debug, O2, Ofast)
 - **Execution timing**: Automatically tracks and displays execution time
 - **Watch mode**: Auto-run code on file save
-- **Run history**: Keep track of recent executions
-- **Clean builds**: Easy cleanup of build artifacts
+- **Run history**: Keep track of recent executions with timestamps
+- **Clean builds**: Easy cleanup of build artifacts, optional auto-cleanup after run
 - **Highly configurable**: Easy to add new languages or customize existing ones
 
 ## 📦 Installation
@@ -87,21 +90,18 @@ EOF
 
 | Command | Description |
 |---------|-------------|
-| `:RunCode` | Compile (if needed) and run the current file |
+| `:RunCode` | Compile (if needed) and run the current file. Checks for binary existence and prompts to build if missing |
 | `:RunFile` | Alias for `:RunCode` |
 | `:RunBuild` | Build/compile only (no execution) |
-| `:RunLast` | Run the last compiled executable |
+| `:RunLast` | Run the last compiled executable (without recompiling) |
 | `:RunWithInput` | Run with `input.txt` as stdin |
-| `:RunWatch` | Toggle watch mode (auto-run on save) |
-| `:RunHistory` | Show execution history with timings |
-| `:RunClean` | Clean build directory |
-| `:RunFloat` | Run in a floating terminal |
-| `:RunTests` | Run all test cases from `tests/` directory |
+| `:RunFloat` | Run in a floating terminal window |
+| `:RunTests` | Run all test cases from `tests/` directory with pass/fail reporting |
 | `:RunIOFiles` | Run with `input.txt` -> `output.txt` redirection |
-| `:RunProfile` | Cycle through optimization profiles (compiled languages) |
+| `:RunProfile` | Cycle through optimization profiles (Debug → O2 → Ofast) |
 | `:RunWatch` | Toggle watch mode (auto-run on save) |
-| `:RunHistory` | Show execution history with timings |
-| `:RunClean` | Clean build directory |
+| `:RunHistory` | Show execution history with timings and timestamps |
+| `:RunClean` | Clean build directory (removes all compiled binaries) |
 
 ### Default Key Mappings
 
@@ -155,6 +155,13 @@ require('runner').setup({
   -- Input/output files
   input_file = 'input.txt',
   output_file = 'output.txt',
+  
+  -- Show execution time after running
+  show_time = true,
+  
+  -- Clean build artifacts after successful run (removes binary after execution)
+  -- Useful for competitive programming to avoid outdated binaries
+  clean_after_run = false,
   
   -- Terminal configuration
   terminal = {
@@ -291,9 +298,34 @@ Run `:RunTests` to execute all tests and see which ones pass/fail.
 1. Write your C++ solution: `solution.cpp`
 2. Create test cases: `tests/1.in`, `tests/1.out`, etc.
 3. Press `<leader>cr` to compile and run
-4. Press `<leader>ctt` to run all tests
-5. Press `<leader>co` to cycle optimization profiles
+   - If binary doesn't exist, you'll be prompted to build first
+4. Press `<leader>ctt` to run all tests with pass/fail reporting
+5. Press `<leader>co` to cycle optimization profiles (Debug → O2 → Ofast)
 6. Press `<leader>ci` to test with `input.txt`
+7. Press `<leader>ce` to quickly run last build without recompiling
+
+### Better Error Debugging
+
+When build fails, you now get detailed compiler output:
+```
+Build failed (exit code 1):
+main.cpp:5:10: error: expected ';' after expression
+    return 0
+         ^
+         ;
+```
+
+### Clean Build Management
+
+```vim
+" Option 1: Manual cleanup
+:RunClean  " Removes all binaries from .build/
+
+" Option 2: Auto cleanup after each run (in your config)
+require('runner').setup({
+  clean_after_run = true,  " Automatically removes binary after execution
+})
+```
 
 ### Watch Mode for Rapid Development
 
@@ -303,10 +335,26 @@ Run `:RunTests` to execute all tests and see which ones pass/fail.
 :RunWatch  " Toggle off when done
 ```
 
+### Terminal Management
+
+The plugin intelligently manages terminals:
+- Pressing `<leader>ci` multiple times closes the previous terminal before opening a new one
+- No more terminal stacking issues!
+- Clean, predictable behavior
+
 ### Check Execution History
 
 ```vim
-:RunHistory  " See your last 10 runs with execution times
+:RunHistory  " See your last 10 runs with execution times and timestamps
+```
+
+Output example:
+```
+📊 Run History (Last 10):
+═══════════════════════════
+1. [14:23:45] solution.cpp (cpp) - 0.234s
+2. [14:22:10] test.py (python) - 1.456s
+3. [14:20:05] app.js (javascript) - 0.089s
 ```
 
 ### Quick Script Execution
@@ -339,7 +387,29 @@ require('runner').setup({
   
   -- Customize settings
   show_time = true,  -- Show execution time
+  clean_after_run = false,  -- Auto-cleanup binaries after run
   build_dir = '.build',
+})
+```
+
+### Recommended Setup for Competitive Programming
+
+```lua
+require('runner').setup({
+  show_time = true,  -- Always show execution time
+  clean_after_run = false,  -- Keep binaries for quick re-runs with <leader>ce
+  
+  runners = {
+    cpp = {
+      type = 'compiled',
+      compiler = 'g++',
+      profiles = {
+        { name = 'Debug', flags = '-std=c++17 -g -Wall -Wextra -Wshadow -fsanitize=address,undefined' },
+        { name = 'Contest', flags = '-std=c++17 -O2 -DLOCAL' },
+        { name = 'Ofast', flags = '-std=c++17 -Ofast -march=native' },
+      },
+    },
+  },
 })
 ```
 
