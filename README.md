@@ -434,8 +434,6 @@ Contributions welcome! To add a new language:
 
 For bugs or feature requests, please open an issue on GitHub.
 
-For bugs or feature requests, please open an issue on GitHub.
-
 ## 📄 License
 
 MIT License - see [LICENSE](./LICENSE) for details
