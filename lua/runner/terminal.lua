@@ -31,12 +31,15 @@ end
 --- @return number Buffer handle for the terminal
 local function create_bottom_split()
   vim.cmd("botright 15split")
-  vim.cmd("enew")
   
-  runner_term_buf = vim.api.nvim_get_current_buf()
+  -- Create a new scratch buffer explicitly for the terminal
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_win_set_buf(0, buf)
+  
+  runner_term_buf = buf
   runner_term_win = vim.api.nvim_get_current_win()
   
-  return vim.api.nvim_get_current_buf()
+  return buf
 end
 
 --- Start a terminal job with the given command
@@ -131,6 +134,8 @@ function M.open_floating(cmd)
   local buf = vim.api.nvim_create_buf(false, true)
   local win = vim.api.nvim_open_win(buf, true, create_float_config())
   
+  -- Ensure we're in the buffer context before calling termopen
+  vim.api.nvim_set_current_buf(buf)
   vim.fn.termopen(get_shell_command(cmd))
   vim.cmd('startinsert')
   
@@ -161,6 +166,9 @@ function M.toggle_floating()
   buf = vim.api.nvim_create_buf(false, true)
   vim.g._runner_float_buf = buf
   vim.g._runner_float_win = vim.api.nvim_open_win(buf, true, create_float_config())
+  
+  -- Ensure we're in the buffer context before calling termopen
+  vim.api.nvim_set_current_buf(buf)
   vim.fn.termopen({ 'bash', '--noprofile' })
   vim.cmd('startinsert')
 end
